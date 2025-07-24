@@ -1,0 +1,5 @@
+streamlit
+google-generativeai # Added for Gemini API
+pandas
+scikit-learn # For potential future use in profiling or advanced recommendation logic
+# openai # Removed as we are switching to Gemini

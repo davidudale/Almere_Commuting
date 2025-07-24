@@ -1,0 +1,11 @@
+CommuterID,Age,Gender,HouseholdIncome,CommuteDistanceKM,UsualCommuteMode,Attitude_Car_Score,Attitude_PT_Score,Attitude_WalkCycle_Score,SN_Car_Score,SN_PT_Score,SN_WalkCycle_Score,PBC_Car_Score,PBC_PT_Score,PBC_WalkCycle_Score,Intention_Car_Score,Intention_PT_Score,Intention_WalkCycle_Score,ActualModeChoice
+101,35,Female,High,15,Car,7,3,2,6,2,1,7,3,2,7,2,1,Car
+102,42,Male,Medium,8,Public Transport,4,6,3,3,5,2,5,6,4,4,6,3,Public Transport
+103,28,Female,Low,3,Walk/Cycle,2,4,6,1,3,5,3,5,7,2,4,6,Walk/Cycle
+104,50,Male,High,25,Car,6,2,1,5,1,1,6,2,1,6,2,1,Car
+105,30,Female,Medium,10,Public Transport,3,7,3,2,6,3,4,7,4,3,7,3,Public Transport
+106,22,Male,Low,5,Walk/Cycle,2,5,7,2,4,6,4,6,7,2,5,7,Walk/Cycle
+107,45,Female,Medium,12,Car,5,4,2,4,3,2,5,4,3,5,4,2,Car
+108,38,Male,High,7,Public Transport,4,6,4,3,5,4,5,6,5,4,6,4,Public Transport
+109,29,Female,Medium,4,Walk/Cycle,3,5,6,3,4,5,4,5,6,3,5,6,Walk/Cycle
+110,55,Male,Low,20,Car,6,3,1,5,2,1,6,3,2,6,3,1,Car
