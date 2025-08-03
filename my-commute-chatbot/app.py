@@ -1,128 +1,258 @@
-# app.py
-
 import streamlit as st
+import json
+import time
+import requests
 import pandas as pd
-import os
-from src.recommendation_engine import load_commuter_data, get_commuter_profile, generate_recommendations
-from src.agent_simulation import run_crowding_simulation
-from src.chatbot_logic import Chatbot
+from profile_logic import determine_commuter_profile, COMMUTER_PROFILES
+import datetime
 
 # --- Configuration ---
-DATA_FILEPATH = os.path.join(os.path.dirname(__file__), 'data', 'commuter_data.csv')
-DEFAULT_PT_CAPACITY = 10 # Adjust this for simulation sensitivity
-NUM_SIM_STEPS = 5 # Number of simulation steps for crowding insights
+# IMPORTANT: Replace "YOUR_GEMINI_API_KEY" with your actual Gemini API key.
+# You can get one from Google AI Studio: https://aistudio.google.com/
+GEMINI_API_KEY = "AIzaSyAzPkgNT0nd4-IP_svJJFSmSWLZ5fZ_idA"
+GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={GEMINI_API_KEY}"
 
 
-# --- Initialize Session State ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "commuter_profile" not in st.session_state:
-    st.session_state.commuter_profile = None
-if "crowding_insights" not in st.session_state:
-    st.session_state.crowding_insights = None
-if "chatbot" not in st.session_state:
-    # Safely get API key from Streamlit secrets
-    gemini_api_key = st.secrets["GEMINI_API_KEY"]
-    st.session_state.chatbot = Chatbot(gemini_api_key)
+# --- Simulated Crowding Data ---
+# This dictionary simulates real-time crowding data based on the provided heatmap image.
+SIMULATED_CROWDING_DATA = {
+    'M1': {
+        '7 AM': {'status': 'moderately crowded', 'percentage': 70},
+        '8 AM': {'status': 'very crowded', 'percentage': 95},
+        '1 PM': {'status': 'not crowded', 'percentage': 30},
+        '5 PM': {'status': 'moderately crowded', 'percentage': 75},
+        '6 PM': {'status': 'very crowded', 'percentage': 90},
+        '2 AM': {'status': 'not crowded', 'percentage': 5}
+    },
+    'M2': {
+        '7 AM': {'status': 'moderately crowded', 'percentage': 65},
+        '8 AM': {'status': 'very crowded', 'percentage': 85},
+        '1 PM': {'status': 'not crowded', 'percentage': 25},
+        '5 PM': {'status': 'very crowded', 'percentage': 80},
+        '6 PM': {'status': 'moderately crowded', 'percentage': 60},
+        '2 AM': {'status': 'not crowded', 'percentage': 10}
+    },
+    'M7': {
+        '7 AM': {'status': 'very crowded', 'percentage': 85},
+        '8 AM': {'status': 'overcrowded', 'percentage': 100},
+        '1 PM': {'status': 'moderately crowded', 'percentage': 50},
+        '5 PM': {'status': 'overcrowded', 'percentage': 100},
+        '6 PM': {'status': 'very crowded', 'percentage': 95},
+        '2 AM': {'status': 'not crowded', 'percentage': 15}
+    },
+    'Bus 24': {
+        '7 AM': {'status': 'not crowded', 'percentage': 40},
+        '8 AM': {'status': 'moderately crowded', 'percentage': 60},
+        '1 PM': {'status': 'not crowded', 'percentage': 35},
+        '5 PM': {'status': 'moderately crowded', 'percentage': 55},
+        '6 PM': {'status': 'moderately crowded', 'percentage': 70},
+        '2 AM': {'status': 'not crowded', 'percentage': 5}
+    }
+}
 
-# --- Load Data ---
-@st.cache_data
-def get_commuter_df():
-    """Loads commuter data and caches it."""
-    return load_commuter_data(DATA_FILEPATH)
+# --- Conversational Questions for Profile Determination ---
+# These are simplified versions of the survey questions with controlled options.
+CONVERSATIONAL_QUESTIONS = [
+    {
+        "text": "Hello! I'm your Urbanvind Commuter Chatbot. To get started, I need to understand your travel habits. What time do you usually leave for work/school?",
+        "key": "What time do you usually leave for work/school?",
+        "options": ["Before 9:00 AM", "9:00 AM or later"]
+    },
+    {
+        "text": "How many days per week do you typically commute?",
+        "key": "How many days per week do you commute?",
+        "options": ["1-2 days", "3-4 days", "5+ days", "I work remotely"]
+    },
+    {
+        "text": "How crowded is your usual bus or train during peak hours?",
+        "key": "How crowded is your usual bus during peak hours?",
+        "options": ["Not crowded", "Slightly crowded", "Very crowded", "Overcrowded"]
+    },
+    {
+        "text": "If you knew your usual bus was full, would you change your departure time? (1='Definitely not', 5='Definitely')",
+        "key": "I would change my departure time if I knew my usual bus was full.",
+        "options": ["1", "2", "3", "4", "5"]
+    },
+    {
+        "text": "If your usual bus arrived 90% full, what would you most likely do?",
+        "key": "If your usual bus is 90% full when it arrives, what would you most likely do?",
+        "options": ["Wait for the next one", "Change my travel time", "Switch to a different line", "Board anyway", "Cancel or delay the trip"]
+    }
+]
 
-commuter_df = get_commuter_df()
+
+def call_gemini_api(prompt_text):
+    """
+    Calls the Gemini API with the given prompt and handles exponential backoff.
+    """
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        "contents": [
+            {"role": "user", "parts": [{"text": prompt_text}]}
+        ]
+    }
+
+    retries = 0
+    max_retries = 5
+    base_delay = 1  # seconds
+
+    while retries < max_retries:
+        try:
+            response = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            result = response.json()
+
+            if result.get('candidates') and result['candidates'][0].get('content') and \
+               result['candidates'][0]['content'].get('parts') and \
+               result['candidates'][0]['content']['parts'][0].get('text'):
+                return result['candidates'][0]['content']['parts'][0]['text']
+            else:
+                st.error(f"Unexpected API response structure: {result}")
+                return "I'm sorry, I couldn't generate a response due to an unexpected API format."
+
+        except requests.exceptions.RequestException as e:
+            retries += 1
+            if retries < max_retries:
+                delay = base_delay * (2 ** (retries - 1)) # Exponential backoff
+                time.sleep(delay)
+                # print(f"API call failed: {e}. Retrying in {delay} seconds...") # For debugging
+            else:
+                st.error(f"Failed to connect to Gemini API after {max_retries} retries: {e}")
+                return "I'm currently unable to connect to my knowledge base. Please try again later."
+        except json.JSONDecodeError:
+            st.error("Failed to decode JSON response from API.")
+            return "I'm sorry, I received an unreadable response from my knowledge base."
+    return "I'm currently unable to process your request. Please try again later."
+
+
+def generate_bot_response_with_gemini(user_message, selected_profile):
+    """
+    Generates a tailored bot response using the Gemini API, incorporating
+    the user's profile and simulated crowding data.
+    """
+    profile_info = COMMUTER_PROFILES.get(selected_profile, {"description": "unknown", "logic_keywords": "unknown"})
+    current_hour = datetime.datetime.now().hour
+    current_time_key = '8 AM' if 7 <= current_hour < 9 else '9 AM' if 9 <= current_hour < 10 else '1 PM' if 12 <= current_hour < 14 else '5 PM' if 16 <= current_hour < 18 else '6 PM'
+
+    # Construct the prompt for Gemini
+    prompt = f"""
+    You are Urbanvind Commuter Chatbot, a decision support system for Almere residents.
+    Your goal is to provide tailored travel suggestions and information based on the user's commuter profile and real-time (simulated) crowding data.
+
+    The user's profile is: "{selected_profile}".
+    This means: {profile_info['description']}
+    Key characteristics of this profile include: {profile_info['logic_keywords']}
+
+    Current simulated crowding data for key routes at {current_time_key}:
+    {json.dumps(SIMULATED_CROWDING_DATA, indent=2)}
+
+    Based on the user's profile and the crowding data, provide a tailored travel suggestion or answer their question.
+    Keep your response concise, helpful, and align it with their profile's characteristics.
+    If the user asks about crowding, use the provided simulated data.
+    If the user asks for general travel advice for Almere, use the current simulated crowding data to give a general recommendation.
+    If the user asks for general advice, use their profile to suggest appropriate actions (e.g., for 'Flexible Avoider', suggest proactive changes; for 'Peak Routine Commuter', acknowledge their routine but gently suggest minor adjustments if needed).
+
+    User's message: "{user_message}"
+    """
+
+    response_text = call_gemini_api(prompt)
+    return response_text
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Commute AI Assistant", layout="centered")
+st.set_page_config(page_title="Urbanvind Commuter Chatbot", layout="centered")
 
-st.title("🚶‍♂️🚌🚗 Commute AI Assistant")
-st.markdown(
-    """
-    Hello! I'm your personalized commuting assistant.
-    I can provide recommendations based on your behavioral profile and even give insights into public transport crowding.
-    """
-)
+st.title("🏙️ Urbanvind Commuter Chatbot")
+st.markdown("Your personalized travel assistant for Almere.")
 
-# --- Commuter Profile Selection ---
-st.sidebar.header("Select Your Commuter Profile")
-if not commuter_df.empty:
-    commuter_ids = commuter_df['CommuterID'].tolist()
-    selected_commuter_id = st.sidebar.selectbox(
-        "Choose a Commuter ID to load their profile:",
-        options=[None] + commuter_ids, # Add None option
-        format_func=lambda x: "Select a profile..." if x is None else f"Commuter ID: {x}"
-    )
+# --- Sidebar for Live Crowding Data ---
+st.sidebar.title("📊 Live Crowding Data")
+st.sidebar.markdown("*(Simulated data for demonstration)*")
 
-    if selected_commuter_id and st.session_state.commuter_profile is None or \
-       (selected_commuter_id and st.session_state.commuter_profile and st.session_state.commuter_profile['CommuterID'] != selected_commuter_id):
-        st.session_state.commuter_profile = get_commuter_profile(selected_commuter_id, commuter_df)
-        st.session_state.messages.append({"role": "assistant", "content": f"Profile for Commuter ID {selected_commuter_id} loaded. How can I help you with your commute today?"})
-        # Run simulation for insights when a new profile is selected
-        st.session_state.crowding_insights = run_crowding_simulation(commuter_df, pt_capacity=DEFAULT_PT_CAPACITY, num_sim_steps=NUM_SIM_STEPS)
-        st.sidebar.success(f"Profile {selected_commuter_id} loaded and crowding simulation run!")
-    elif selected_commuter_id is None and st.session_state.commuter_profile is not None:
-        st.session_state.commuter_profile = None
-        st.session_state.crowding_insights = None
-        st.session_state.messages.append({"role": "assistant", "content": "Commuter profile cleared. Please select a profile to get personalized recommendations."})
-        st.sidebar.info("No profile selected.")
+# Get current time to determine peak/off-peak
+current_hour = datetime.datetime.now().hour
+current_time_key = '7 AM' if 7 <= current_hour < 9 else '1 PM' if 12 <= current_hour < 14 else '5 PM' if 16 <= current_hour < 18 else '2 AM'
 
-    if st.session_state.commuter_profile:
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("Current Profile Details:")
-        st.sidebar.write(f"**ID:** {st.session_state.commuter_profile.get('CommuterID', 'N/A')}")
-        st.sidebar.write(f"**Usual Mode:** {st.session_state.commuter_profile.get('UsualCommuteMode', 'N/A')}")
-        st.sidebar.write(f"**Attitude PT:** {st.session_state.commuter_profile.get('Attitude_PT_Score', 'N/A')}")
-        st.sidebar.write(f"**PBC PT:** {st.session_state.commuter_profile.get('PBC_PT_Score', 'N/A')}")
-        # Display crowding insights if available
-        if st.session_state.crowding_insights:
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("Simulation Insights:")
-            st.sidebar.write(f"Avg PT Crowding: {st.session_state.crowding_insights['average_pt_crowding']:.0%}")
-            st.sidebar.write(f"Switches from PT: {st.session_state.crowding_insights['total_mode_switches_from_pt']}")
-            st.sidebar.caption(f"(Simulated with PT capacity: {st.session_state.crowding_insights['simulated_pt_capacity']})")
-else:
-    st.error("Could not load commuter data. Please ensure 'data/commuter_data.csv' exists.")
+st.sidebar.subheader("Bus Lines")
+for line, times in SIMULATED_CROWDING_DATA.items():
+    if "Bus" in line or line.startswith('M'):
+        data = times.get(current_time_key, {'status': 'not crowded', 'percentage': 0})
+        status = data['status']
+        percentage = data['percentage']
+        color = "green" if percentage < 50 else "orange" if percentage < 80 else "red"
+        st.sidebar.markdown(f"**{line}** at {current_time_key}:")
+        st.sidebar.progress(percentage, text=f"{percentage}% ({status})")
+
+st.sidebar.subheader("Train Lines")
+# The image only shows bus lines, so we'll leave this section as a placeholder.
+st.sidebar.markdown("*(No simulated data for train lines available)*")
+
+# Initialize session state for conversation
+if "chat_phase" not in st.session_state:
+    st.session_state.chat_phase = "questions"
+    st.session_state.questions_asked = 0
+    st.session_state.user_answers = {}
+    st.session_state.selected_profile = None
+    st.session_state.messages = []
 
 
-# --- Chat Interface ---
-st.subheader("Chat with the Assistant")
+# --- Conversation Flow Logic ---
+if st.session_state.chat_phase == "questions":
+    # Check if all questions have been asked
+    if st.session_state.questions_asked >= len(CONVERSATIONAL_QUESTIONS):
+        st.session_state.chat_phase = "determining_profile"
+        st.rerun()
 
-# Display chat messages from history on app rerun
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    # If not all questions have been asked, display the next one
+    else:
+        current_question_index = st.session_state.questions_asked
+        current_question = CONVERSATIONAL_QUESTIONS[current_question_index]
 
-# React to user input
-if prompt := st.chat_input("How can I help you with your commute?"):
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    # Display user message in chat message container
-    with st.chat_message("user"):
-        st.markdown(prompt)
+        # Use a single chat message container for the bot's question
+        with st.chat_message("bot"):
+            st.markdown(current_question['text'])
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response_content = ""
-            if st.session_state.commuter_profile:
-                # First, try to get a personalized recommendation
-                if "recommend" in prompt.lower() or "advice" in prompt.lower() or "suggest" in prompt.lower():
-                    recommendations = generate_recommendations(
-                        st.session_state.commuter_profile,
-                        st.session_state.crowding_insights
-                    )
-                    response_content = "Here are some personalized recommendations based on your profile:\n\n" + \
-                                       "\n".join([f"- {rec}" for rec in recommendations])
-                else:
-                    # If not explicitly asking for recommendations, use general chatbot
-                    response_content = st.session_state.chatbot.get_chat_response(prompt)
-            else:
-                response_content = "Please select a commuter profile from the sidebar to get personalized recommendations."
-                # Still allow general chat if no profile is selected
-                if "profile" not in prompt.lower(): # Avoid infinite loop if user asks about profile
-                     response_content = st.session_state.chatbot.get_chat_response(prompt)
+        # Use radio buttons for all questions with predefined options
+        user_answer = st.radio(
+            "Please select an option:",
+            current_question['options'],
+            key=f"q_radio_{current_question_index}"
+        )
+        if st.button("Next Question", key=f"next_{current_question_index}"):
+            st.session_state.user_answers[current_question['key']] = user_answer
+            st.session_state.questions_asked += 1
+            st.rerun()
 
+elif st.session_state.chat_phase == "determining_profile":
+    with st.spinner("Analyzing your answers and determining your commuter profile..."):
+        determined_profile = determine_commuter_profile(st.session_state.user_answers)
+        st.session_state.selected_profile = determined_profile
 
-            st.markdown(response_content)
-            st.session_state.messages.append({"role": "assistant", "content": response_content})
+        profile_message = f"Based on your answers, your profile is: **{determined_profile}**."
+        st.session_state.messages.append({"role": "bot", "content": profile_message})
+        
+        st.session_state.chat_phase = "chatting"
+        st.session_state.messages.append({"role": "bot", "content": "Now you can ask me for personalized travel advice!"})
+        st.rerun()
+        
+elif st.session_state.chat_phase == "chatting":
+    st.info(f"Your current profile: **{st.session_state.selected_profile}**")
 
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Type your message..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("bot"):
+            with st.spinner("Thinking..."):
+                bot_response = generate_bot_response_with_gemini(prompt, st.session_state.selected_profile)
+                st.markdown(bot_response)
+            st.session_state.messages.append({"role": "bot", "content": bot_response})
+
+    st.markdown("---")
+    st.caption("Note: Crowding data is simulated for this prototype.")
