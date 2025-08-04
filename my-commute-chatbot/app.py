@@ -12,6 +12,28 @@ import datetime
 GEMINI_API_KEY = "AIzaSyAzPkgNT0nd4-IP_svJJFSmSWLZ5fZ_idA"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={GEMINI_API_KEY}"
 
+# --- Load and Analyze Survey Data from CSV ---
+try:
+    df = pd.read_csv("urban.csv")
+
+    # Clean and analyze the data to create a summary for the chatbot
+    issues_frustration = df['What issues frustrate you most about Almere Bus line?'].value_counts()
+    commute_time = df['What time do you usually leave for work/school?'].str[:2].astype(int).mean()
+    age_average = df['What is your age?'].mean()
+    primary_transport = df['What is your primary mode of transportation?'].value_counts().idxmax()
+    crowd_levels = df['How crowded is your usual bus during peak hours?'].value_counts()
+
+    csv_data_summary = f"""
+    Summary of Urban Mobility Survey responses from Almere:
+    - The most common frustrations with the bus line are: {issues_frustration.head(3).to_dict()}
+    - The average commuter leaves for work/school around {commute_time:.0f}:00.
+    - The most common primary mode of transportation is: {primary_transport}.
+    - Commuters perceive peak hour crowding as follows: {crowd_levels.to_dict()}.
+    - A significant number of people {df[df['Would you be open to using an app that gives personal travel advice based on real-time crowd levels?'] == 'Yes'].shape[0]} are open to using a travel advice app.
+    """
+except FileNotFoundError:
+    st.error("Survey data file not found. The bot will use general knowledge instead.")
+    csv_data_summary = "No survey data available for analysis."
 
 # --- Simulated Crowding Data ---
 # This dictionary simulates real-time crowding data based on the provided heatmap image.
@@ -127,19 +149,22 @@ def call_gemini_api(prompt_text):
     return "I'm currently unable to process your request. Please try again later."
 
 
-def generate_bot_response_with_gemini(user_message, selected_profile):
+def generate_bot_response_with_gemini(user_message, selected_profile, csv_summary):
     """
     Generates a tailored bot response using the Gemini API, incorporating
-    the user's profile and simulated crowding data.
+    the user's profile, simulated crowding data, and CSV survey summary.
     """
     profile_info = COMMUTER_PROFILES.get(selected_profile, {"description": "unknown", "logic_keywords": "unknown"})
     current_hour = datetime.datetime.now().hour
-    current_time_key = '8 AM' if 7 <= current_hour < 9 else '9 AM' if 9 <= current_hour < 10 else '1 PM' if 12 <= current_hour < 14 else '5 PM' if 16 <= current_hour < 18 else '6 PM'
+    current_time_key = '7 AM' if 7 <= current_hour < 9 else '1 PM' if 12 <= current_hour < 14 else '5 PM' if 16 <= current_hour < 18 else '2 AM'
 
-    # Construct the prompt for Gemini
+    # Construct the prompt for Gemini, including the CSV summary
     prompt = f"""
     You are Urbanvind Commuter Chatbot, a decision support system for Almere residents.
-    Your goal is to provide tailored travel suggestions and information based on the user's commuter profile and real-time (simulated) crowding data.
+    Your goal is to provide tailored travel suggestions and information based on the user's commuter profile, real-time (simulated) crowding data, and insights from a survey of Almere commuters.
+
+    Insights from the Almere Commuter Survey:
+    {csv_summary}
 
     The user's profile is: "{selected_profile}".
     This means: {profile_info['description']}
@@ -148,10 +173,10 @@ def generate_bot_response_with_gemini(user_message, selected_profile):
     Current simulated crowding data for key routes at {current_time_key}:
     {json.dumps(SIMULATED_CROWDING_DATA, indent=2)}
 
-    Based on the user's profile and the crowding data, provide a tailored travel suggestion or answer their question.
+    Based on the user's profile, the survey insights, and the crowding data, provide a tailored travel suggestion or answer their question.
     Keep your response concise, helpful, and align it with their profile's characteristics.
     If the user asks about crowding, use the provided simulated data.
-    If the user asks for general travel advice for Almere, use the current simulated crowding data to give a general recommendation.
+    If the user asks for general travel advice for Almere, use the current simulated crowding data and the survey insights to give a general recommendation.
     If the user asks for general advice, use their profile to suggest appropriate actions (e.g., for 'Flexible Avoider', suggest proactive changes; for 'Peak Routine Commuter', acknowledge their routine but gently suggest minor adjustments if needed).
 
     User's message: "{user_message}"
@@ -250,7 +275,7 @@ elif st.session_state.chat_phase == "chatting":
 
         with st.chat_message("bot"):
             with st.spinner("Thinking..."):
-                bot_response = generate_bot_response_with_gemini(prompt, st.session_state.selected_profile)
+                bot_response = generate_bot_response_with_gemini(prompt, st.session_state.selected_profile, csv_data_summary)
                 st.markdown(bot_response)
             st.session_state.messages.append({"role": "bot", "content": bot_response})
 
